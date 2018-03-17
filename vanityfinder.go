@@ -68,7 +68,10 @@ func findWords(ad *addressDetail) {
 					} else {
 						ad.wordsFound = fmt.Sprintf("%s, %s", ad.wordsFound, wordSet[i])
 					}
-				ad.score += len(wordSet[i]) + (81 - p)
+				ad.score += (len(wordSet[i])*5) + (81 - p)
+				if p == 0 {
+					ad.score += 50
+				}
 				ad.numWords++
 			}
 		}
@@ -195,7 +198,7 @@ func main(){
 	createTables(*db)
 	***/
 
-	for i := 50; i > 0; i-- {
+	for i := 500; i > 0; i-- {
 		sb := seedBlock{}
 
 		collect(&sb)
