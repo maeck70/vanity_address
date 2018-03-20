@@ -6,11 +6,10 @@ import "time"
 import "bufio"
 import "math/rand"
 import "strings"
+import "log"
 import "github.com/maeck70/giota"
-/***
 import "database/sql"
-import	_ "github.com/mattn/go-sqlite3"
-***/
+import	_ "github.com/lib/pq"
 
 const tryteAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ9"
 const blockSize = 100
@@ -19,6 +18,8 @@ const minWordSize = 5
 
 type addressDetail struct {
 	address giota.Address
+	index int
+	security int
 	wordsFound string
 	numWords int
 	score int
@@ -31,6 +32,8 @@ type seedBlock struct {
 
 
 var wordSet []string
+var db int
+
 
 func loadWords() {
 
@@ -66,7 +69,7 @@ func findWords(ad *addressDetail) {
 				if len(ad.wordsFound) == 0 {
 						ad.wordsFound = fmt.Sprintf("%s", wordSet[i])
 					} else {
-						ad.wordsFound = fmt.Sprintf("%s, %s", ad.wordsFound, wordSet[i])
+						ad.wordsFound = fmt.Sprintf("%s %s", ad.wordsFound, wordSet[i])
 					}
 				ad.score += (len(wordSet[i])*5) + (81 - p)
 				if p == 0 {
@@ -105,6 +108,8 @@ func getAddressBlock(sb *seedBlock) {
 			fmt.Printf("Error: %s", err)
 		}
 		sb.addressDetailSet[i].address = addr
+		sb.addressDetailSet[i].index = i
+		sb.addressDetailSet[i].security = security
 		findWords(&sb.addressDetailSet[i])
 	}
 }
@@ -124,7 +129,7 @@ func highlightWords(address string, wordsFound string) string {
 }
 
 
-func collect(sb *seedBlock) {
+func collect(sb *seedBlock, db *sql.DB) {
 
 	sb.seed = generateSeed()
 
@@ -133,6 +138,7 @@ func collect(sb *seedBlock) {
 	fmt.Printf("Seed: %s\n", sb.seed)
 	for i := 0; i < blockSize; i++ {
 		if sb.addressDetailSet[i].score > 0 {
+			writeAddress(db, &sb.seed, &sb.addressDetailSet[i])
 			fmt.Printf("[%d] %s", i, highlightWords(string(sb.addressDetailSet[i].address), sb.addressDetailSet[i].wordsFound))
 			fmt.Printf(" %d %s\n", sb.addressDetailSet[i].score, sb.addressDetailSet[i].wordsFound)
 		}
@@ -142,66 +148,90 @@ func collect(sb *seedBlock) {
 }
 
 
-/***
-func createTables(db *){
-	sqlStmt := "create table seed (id integer not null primary key, seed text);"
-	_, err = db.Exec(sqlStmt)
-	if err != nil {
-		log.Printf("%q: %s\n", err, sqlStmt)
-		return
+
+func writeSeed(db *sql.DB, seed *giota.Trytes) int {
+	var seedId int
+
+	err := db.QueryRow(`SELECT id FROM public."Address_seed" WHERE seed = $1`, seed).Scan(&seedId)
+
+	switch {
+	case err == sql.ErrNoRows:
+		err := db.QueryRow(`INSERT INTO public."Address_seed"(seed) 
+					VALUES($1) RETURNING id`, seed).Scan(&seedId)
+		if err != nil {
+			log.Fatal(err)
+		}
+	case err != nil:
+		log.Fatal(err)
 	}
 
-	sqlStmt = "create table address (id integer not null primary key, seed integer, address text, words integer, words_found text, score integer);"
-	_, err = db.Exec(sqlStmt)
-	if err != nil {
-		log.Printf("%q: %s\n", err, sqlStmt)
-		return
-	}
+	return seedId
 }
 
 
-func writeAddress(db *, seed *giota.Trytes, ad *addressDetail) {
-	tx, err := db.Begin()
-	if err != nil {
-		log.Fatal(err)
-	}
 
-	stmt, err := tx.Prepare("insert into seed (id, name) values(?, ?)")
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer stmt.Close()
+func writeWords(db *sql.DB, addressId int, ad *addressDetail) {
+	var wordId int
 
-	for i := 0; i < 100; i++ {
-		_, err = stmt.Exec(i, fmt.Sprintf("こんにちわ世界%03d", i))
+	words := strings.Split(ad.wordsFound, " ")
+
+	for i := range(words) {
+		word := words[i]
+		err := db.QueryRow(`SELECT id FROM public."Address_word" WHERE word = $1`, word).Scan(&wordId)
+
+		switch {
+		case err == sql.ErrNoRows:
+			err := db.QueryRow(`INSERT INTO public."Address_word"(word, score_multiplier) 
+						VALUES($1, $2) RETURNING id`, word, 1).Scan(&wordId)
+			if err != nil {
+				log.Fatal(err)
+			}
+		case err != nil:
+			log.Fatal(err)
+		}
+
+		index := strings.Index(string(ad.address), word)
+		err = db.QueryRow(`INSERT INTO public."Address_addressword"(address_id, word_id, position) 
+					VALUES($1, $2, $3) RETURNING id`, addressId, wordId, index).Scan(&wordId)
 		if err != nil {
 			log.Fatal(err)
 		}
 	}
-
-	tx.Commit()
 }
-***/
+
+
+
+func writeAddress(db *sql.DB, seed *giota.Trytes, ad *addressDetail) {
+	var seedId int
+	var addressId int
+
+	seedId = writeSeed(db, seed)
+	if seedId != 0 {
+		err := db.QueryRow(`INSERT INTO public."Address_address"(seed_id, address, index, security, score)
+					VALUES($1, $2, $3, $4, $5) RETURNING id`, seedId, ad.address, ad.index, ad.security, ad.score).Scan(&addressId)
+		if err != nil {
+			log.Fatal(err)
+		}
+		writeWords(db, addressId, ad)
+	}
+}
+
 
 
 func main(){
 
 	loadWords()
 
-	/***
-	db, err := sql.Open("sqlite3", "./vanityDB.db")
+	connStr := "user=django password=wedersmeer dbname=iotaVanityAddress"
+	db, err := sql.Open("postgres", connStr)
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer db.Close()
-
-	createTables(*db)
-	***/
 
 	for i := 500; i > 0; i-- {
 		sb := seedBlock{}
 
-		collect(&sb)
+		collect(&sb, db)
 	}
 }
 
